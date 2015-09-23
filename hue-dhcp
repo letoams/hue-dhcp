@@ -1,0 +1,112 @@
+#!/usr/bin/python
+#
+# /usr/local/sbin/hue-dhcp 
+#
+# Turn on some Philips Hue lights when it is dark and your phone comes home
+#
+# I was tired of stumbling in my dark hallway with my phone trying to
+# turn my lights when it was dark. So now my dhcp server tells my hue
+# bridge to turn on my lights if I join my wifi. This usually happens before
+# I have unlocked and opened my front door.
+
+# Requirements:
+#
+# phue python library https://github.com/studioimaginaire/phue
+#
+# ISC dhcp server http://www.isc.org/
+#
+# It uses geoip.prototypeapp.com to roughly convert your IP to
+# a Geo location lat/long
+#
+# It uses the sunrise-sunset.org API to determine if it is dark at
+# your lat/long
+
+# Mac addresses of devices that will trigger lights to go on
+# Leave empty to trigger on all devices (eg when your wifi is locked down)
+# (my wifi is open and I don't want my neighbours to turn on my lights)
+# mymacs = [ "f0:d1:a9:00:00:00" , "28:e1:4c:00:00:00" ]
+mymacs = []
+
+# which lights to turn on - leave empty to turn all lights on
+# mylights = [ "window", "ceiling1", "ceiling2", "ceiling3" ]
+mylights = []
+
+# Briefly blink the lights when you come home and the lights were already on
+blink = False
+
+from phue import Bridge
+import sys
+import os
+import requests
+import datetime
+
+
+GEO_URL = "http://geoip.prototypeapp.com/api/locate"
+SUNSET_URL = "http://api.sunrise-sunset.org/json?formatted=0&"
+
+# not set by ISC dhcpd when calling execute() but phue.py needs it to find ~/.python-hue
+os.environ["HOME"] = "/root/"
+
+def darkness():
+	nowtime = datetime.datetime.utcnow().strftime("%H:%M")
+	nowdate = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+	response = requests.get(GEO_URL)
+	data = response.json()
+	lat = data["location"]["coords"]["latitude"]
+	lng = data["location"]["coords"]["longitude"]
+	url = "%slat=%s&lng=%s&date=%s"%(SUNSET_URL,lat,lng, nowdate)
+	response = requests.get(url)
+	data = response.json()
+	sunset =  data["results"]["sunset"]
+	sunrise =  data["results"]["sunrise"]
+	sunset = sunset.split("T")[1].rsplit(":",2)[0]
+	sunrise = sunrise.split("T")[1].rsplit(":",2)[0]
+	minset = int(sunset.split(":")[0]) * 60 + int(sunset.split(":")[1])
+	minrise = int(sunrise.split(":")[0]) * 60 + int(sunrise.split(":")[1])
+	minnow = int(nowtime.split(":")[0]) * 60 + int(nowtime.split(":")[1])
+
+	if minnow <= minrise:
+		# It is dark before sunrise
+		return True
+	else:
+		# turn on the lights 15 minutes before sunset
+		if minnow >= minset - 15:
+			# It is dark just before or after sunset
+			return True
+		else:
+			# It is light enough
+			return False
+
+def lightson(mylights):
+	try:
+		b = Bridge()
+		b.connect()
+	except:
+		sys.exit("Press the button on the bridge and try again - ensure to run this as the same user as dhcpd")
+
+	if not mylights:
+		# why does this return unicode when get_light() and set_light() cannot use unicode?
+		mylights = b.get_light_objects('name').keys()
+
+	for lightname in mylights:
+		try:
+			if not b.get_light(str(lightname))["state"]["on"]:
+				command =  {'transitiontime' : 30, 'on' : True, 'bri' : 254}
+				b.set_light(str(lightname), command)
+			else:
+				if blink:
+					b.set_light(str(lightname), 'alert', 'select')
+					
+		except:
+			print("ignoring light %s - not found\n"%lightname)
+
+if __name__ == '__main__':
+	args = sys.argv
+
+	if len(args) != 4:
+		sys.exit("wrong number of arguments from ISC DHCPD: %s"%len(args))
+
+	if args[1] == "commit":
+		if not mymacs or args[3] in mymacs:
+			if darkness():
+				lightson(mylights)

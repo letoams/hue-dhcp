@@ -1,0 +1,9 @@
+
+# Add this to the bottom of your dhcpd.conf file
+
+on commit {
+        set ClientIP = binary-to-ascii(10, 8, ".", leased-address);
+        set ClientMac = binary-to-ascii(16, 8, ":", substring(hardware, 1, 6));
+        log(concat("Commit: IP: ", ClientIP, " Mac: ", ClientMac));
+        execute("/usr/local/sbin/hue-dhcp", "commit", ClientIP, ClientMac);
+}
